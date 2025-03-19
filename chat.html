@@ -1,0 +1,2118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Seva Application</title>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, getDocs, query, onSnapshot, orderBy, updateDoc, doc, where, limit, deleteDoc } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js";
+        import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/9.6.1/firebase-storage.js";
+
+        // ** IMPORTANT: Replace with your actual Firebase configuration! **
+   // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyAE9QcgKPFGT7ahVpJb7QCkT7VZ5hCp80U",
+  authDomain: "my-chat-app-9b8e3.firebaseapp.com",
+  databaseURL: "https://my-chat-app-9b8e3-default-rtdb.firebaseio.com",
+  projectId: "my-chat-app-9b8e3",
+  storageBucket: "my-chat-app-9b8e3.firebasestorage.app",
+  messagingSenderId: "1032323686645",
+  appId: "1:1032323686645:web:79d7b712b8d3e338ac65bc",
+  measurementId: "G-F148SDPL2P"
+};
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const storage = getStorage(app);
+
+        // --- Admin User List (For Admin Delete Feature) ---
+        const adminUsers = ['Team 1 CO']; // Add admin usernames here
+
+        // --- Function to check if sender is admin ---
+        function isAdminUser(senderName) {
+            return adminUsers.includes(senderName);
+        }
+
+
+        // Function to save Seva application
+        async function saveSevaApplication() {
+            const name = document.getElementById('name').value.trim();
+            const phone = document.getElementById('phone').value.trim();
+            const email = document.getElementById('email').value.trim();
+            const sevaType = document.getElementById('sevaType').value.trim();
+            const state = document.getElementById('state').value.trim(); // Get selected state
+
+            if (name && phone && email && sevaType && state) { // Validate state is also selected
+                try {
+                    // Save to main SevaApplications collection (for leaderboard)
+                    await addDoc(collection(db, 'SevaApplications'), {
+                        name, phone, email, sevaType, state, // Include state in main collection
+                        status: 'pending', // Initial status
+                        timestamp: new Date() // Add timestamp
+                    });
+
+                    // Save to state-specific SevaApplications collection
+                    await addDoc(collection(db, 'States', state, 'SevaApplications'), {
+                        name, phone, email, sevaType,
+                        status: 'pending', // Initial status
+                        timestamp: new Date() // Add timestamp
+                    });
+
+                    alert(`✅ ${name} has successfully applied for Seva in ${state} State!`); // Modified alert message to include name and state
+
+                    // ** Send message to state chatroom **
+                    const applicationMessage = `📢 New Seva Application: ${name} has applied for ${sevaType} Seva in ${state}!`;
+
+                    console.log("Debug: State chatroom name being used:", state); // *** ADD THIS LOG ***
+                    console.log("Debug: Calling sendChatroomMessage with:", state, 'Seva Application System', applicationMessage); // *** ADD THIS LOG ***
+
+                    await sendChatroomMessage(state, 'Seva Application System', applicationMessage); // Send message to the state chatroom
+
+                    console.log("Debug: sendChatroomMessage function call completed."); // *** ADD THIS LOG ***
+
+
+                    // Optionally, automatically try to select an applicant after submission (for testing)
+                    // selectNextApplicant(); // You might not want to do this automatically in a real scenario
+                } catch (error) {
+                    console.error("Error saving Seva application:", error);
+                    alert('❌ Error saving Seva application. See console for details.');
+                }
+            } else {
+                alert('⚠️ Please fill in all fields, including State!'); // Updated alert message
+            }
+        }
+
+        // Function to select the next pending applicant (No changes here)
+        async function selectNextApplicant() {
+            // ... (rest of the selectNextApplicant function is the same) ...
+            const q = query(collection(db, 'SevaApplications'), orderBy('timestamp'), where('status', '==', 'pending'), limit(1)); // Query for the earliest pending application
+
+            try {
+                const querySnapshot = await getDocs(q);
+                if (!querySnapshot.empty) {
+                    const nextApplicantDoc = querySnapshot.docs[0];
+                    const applicantData = querySnapshot.docs[0].data();
+                    const applicantName = applicantData.name; // Get applicant's name
+
+                    await updateDoc(doc(db, 'SevaApplications', nextApplicantDoc.id), {
+                        status: 'selected'
+                    });
+
+                    console.log(`✅ Selected applicant: ${applicantName}`);
+                    alert(`✅ Selected applicant: ${applicantName} has been selected for Seva and added to the leaderboard.`); // More informative alert
+                    loadLeaderboard(); // Refresh leaderboard to reflect changes
+
+                    // **Send announcement to chatroom**
+                    const announcementMessage = `🎉  Applicant "${applicantName}" has been automatically selected for Seva! 🎉`;
+                    await sendChatroomMessage('Announcements', 'AI System', announcementMessage); // Send message to "Announcements" chatroom
+
+                } else {
+                    console.log("No pending applicants found.");
+                    alert("No pending applicants found. No applicant could be selected.");
+                }
+            } catch (error) {
+                console.error("Error selecting next applicant:", error);
+                console.error("Full error object:", error); // Log the full error object for details! **DEBUGGING: Check Console for this error**
+                // alert('❌ Error selecting next applicant. See console for details.'); // Removed the alert message as requested. Error is still logged in console.
+            }
+        }
+
+        // Function to reject the currently selected Seva application (No changes here)
+        async function rejectCurrentApplicant() {
+            // ... (rest of the rejectCurrentApplicant function is the same) ...
+            const q = query(collection(db, 'SevaApplications'), where('status', '==', 'selected'), limit(1)); // Query for the currently selected application
+
+            try {
+                const querySnapshot = await getDocs(q);
+                if (!querySnapshot.empty) {
+                    const selectedApplicantDoc = querySnapshot.docs[0];
+                    const applicantData = selectedApplicantDoc.data();
+                    await rejectSevaApplication(selectedApplicantDoc.id, applicantData.name); // Call rejectSevaApplication with name
+                } else {
+                    console.log("No applicant currently selected to reject.");
+                    alert("No applicant currently selected to reject.");
+                }
+            } catch (error) {
+                console.error("Error rejecting current applicant:", error);
+                console.error("Full error object:", error); // Log the full error object for details! **DEBUGGING: Check Console for this error**
+                alert('❌ Error rejecting current applicant. See console for details.');
+            }
+        }
+
+
+        // Modified rejectSevaApplication to accept applicantName for alert message (No changes here)
+        async function rejectSevaApplication(applicationId, applicantName) {
+            // ... (rest of the rejectSevaApplication function is the same) ...
+            try {
+                await updateDoc(doc(db, 'SevaApplications', applicationId), {
+                    status: 'rejected'
+                });
+                console.log(`❌ Rejected application with ID: ${applicationId}`);
+                alert(`❌ Applicant ${applicantName} has been rejected for Seva.`); // More informative alert
+                selectNextApplicant(); // Automatically select the next applicant after rejection
+            } catch (error) {
+                console.error("Error rejecting application:", error);
+                console.error("Full error object:", error); // Log the full error object for details! **DEBUGGING: Check Console for this error**
+                alert('❌ Error rejecting application. See console for details.');
+            }
+        }
+
+        // Function to load leaderboard data - SIMPLIFIED FOR DEBUGGING
+        async function loadLeaderboard() {
+            const leaderboardTable = document.getElementById('leaderboardTable');
+
+            // ** Simplest Table Clearing **
+            leaderboardTable.innerHTML = ''; // Just use innerHTML for now
+
+            // Load and display leaderboard data
+            const q = query(collection(db, 'SevaApplications'), orderBy('timestamp'));
+            const querySnapshot = await getDocs(q);
+
+            // Create table structure
+            const table = document.createElement('table');
+            table.style.width = '100%';
+            table.style.borderCollapse = 'collapse';
+
+            const thead = table.createTHead();
+            let headerRow = thead.insertRow();
+            const headers = ['Name', 'Seva Type', 'State', 'Status']; // REMOVED 'Actions' for simplicity
+            headers.forEach(headerText => {
+                let th = document.createElement('th');
+                th.textContent = headerText;
+                th.style.padding = '8px';
+                th.style.borderBottom = '2px solid #00e6e6';
+                th.style.textAlign = 'left';
+                headerRow.appendChild(th);
+            });
+
+            const tbody = table.createTBody();
+
+            querySnapshot.forEach((doc) => {
+                const data = doc.data();
+                let row = tbody.insertRow();
+
+                let nameCell = row.insertCell();
+                let sevaTypeCell = row.insertCell();
+                let stateCell = row.insertCell();
+                let statusCell = row.insertCell();
+
+                nameCell.textContent = data.name;
+                sevaTypeCell.textContent = data.sevaType;
+                stateCell.textContent = data.state;
+                statusCell.textContent = data.status;
+
+                 [nameCell, sevaTypeCell, stateCell, statusCell].forEach(cell => {
+                    cell.style.padding = '8px';
+                    cell.style.borderBottom = '1px solid rgba(0, 230, 230, 0.2);';
+                });
+            });
+
+            leaderboardTable.innerHTML = table.outerHTML;
+        }
+
+        // New function to send message to a specific chatroom (No changes here)
+        async function sendChatroomMessage(chatroomName, senderName, messageText) {
+            // ... (rest of the sendChatroomMessage function is the same) ...
+            if (chatroomName && messageText) {
+                try {
+                    console.log("Sending message to chatroom:", chatroomName, "Sender:", senderName, "Text:", messageText); // Log before sending
+                    const docRef = await addDoc(collection(db, 'chatrooms', chatroomName, 'messages'), {
+                        sender: senderName,
+                        text: messageText,
+                        timestamp: new Date()
+                    });
+                    console.log(`✅ Message sent to chatroom "${chatroomName}" with ID:`, docRef.id, "Text:", messageText); // Log success with doc ID
+                } catch (error) {
+                    console.error(`❌ Error sending message to chatroom "${chatroomName}":`, error);
+                    console.error("Full error object:", error); // Log the full error object for details! **DEBUGGING: Check Console for this error**
+                    alert(`Error sending message to Announcements chatroom. See console for details.`); // Alert user of error
+                }
+            }
+        }
+
+        // --- Theme Functionality ---
+        const themeClassPrefix = 'theme-';
+        const themeClasses = ['default', 'dark-a', 'white', 'theme4', 'theme5', 'neon-orange', 'neon-green'];
+
+        function setTheme(themeName) {
+            const body = document.body;
+            // Remove any existing theme classes
+            themeClasses.forEach(theme => {
+                body.classList.remove(themeClassPrefix + theme);
+            });
+            // Add the new theme class
+            if (themeName !== 'default') { // Don't add class for default theme
+                body.classList.add(themeClassPrefix + themeName);
+            }
+            localStorage.setItem('selectedTheme', themeName); // Store selected theme
+        }
+
+        function applyStoredTheme() {
+            const storedTheme = localStorage.getItem('selectedTheme');
+            if (storedTheme) {
+                setTheme(storedTheme);
+            } else {
+                setTheme('neon-green'); // Default theme on first load is now neon-green
+            }
+        }
+
+
+        document.addEventListener("DOMContentLoaded", function () {
+            document.getElementById('submitSeva').addEventListener('click', saveSevaApplication);
+            document.getElementById('sendMessage').addEventListener('click', sendMessage);
+            document.getElementById('showLeaderboard').addEventListener('click', loadLeaderboard); // Load leaderboard on button click
+            document.getElementById('fileInput-trigger').addEventListener('click', function() { // Trigger file input click
+                document.getElementById('fileInput').click();
+            });
+            document.getElementById('fileInput').addEventListener('change', handleFileUpload); // File Upload Event Listener
+            document.getElementById('groupProfileIcon').addEventListener('click', toggleGroupSettings); // Toggle group settings on group profile icon click
+            document.getElementById('closeGroupSettingsButton').addEventListener('click', closeGroupSettings); // Close group settings button
+            document.getElementById('accountSettingsIcon').addEventListener('click', toggleAccountSettings); // Toggle account icon click
+            document.getElementById('closeAccountSettings').addEventListener('click', closeAccountSettings); // Close account settings button
+            document.getElementById('adminDashboardButton').addEventListener('click', toggleAdminDashboard); // Admin Dashboard Button
+            document.getElementById('askGeminiButton').addEventListener('click', askGeminiAI); // Gemini AI Button
+            document.getElementById('settingsButtonSidebar').addEventListener('click', showSettingsSection); // Settings button in sidebar
+            document.getElementById('closeSettingsSidebar').addEventListener('click', hideSettingsSection); // Close settings in sidebar
+
+            // Theme selection event listeners - Sidebar Settings
+            document.querySelectorAll('.theme-option-sidebar').forEach(option => {
+                option.addEventListener('click', function() {
+                    const theme = this.dataset.theme;
+                    setTheme(theme);
+                    hideSettingsSection(); // Close settings after theme change
+                });
+            });
+
+
+            applyStoredTheme(); // Apply theme on page load from localStorage
+        });
+
+        // Chat Functionality (rest of your chat functions remain the same, but sendMessage is modified below)
+        let currentChatState = null;
+        let currentSenderName = 'Team 1 CO'; // **Set your default sender name here, or get it dynamically**
+        let isGroupSettingsVisible = false; // Track group settings visibility
+        let isAccountSettingsVisible = false; // Track account settings visibility
+        let isAdminDashboardVisible = false; // Track admin dashboard visibility
+        let isAdminSettingsSidebarVisible = false; // Track sidebar settings visibility
+        let adminDashboardButton = document.getElementById('adminDashboardButton'); // Get the admin dashboard button
+        let settingsButtonSidebar = document.getElementById('settingsButtonSidebar'); // Get the settings button
+
+        async function openChatroom(stateName) {
+            currentChatState = stateName;
+            showSection('chatSection');
+            document.getElementById('currentChatStateName').textContent = stateName;
+            document.getElementById('groupProfileIcon').querySelector('span').textContent = stateName.substring(0, 2).toUpperCase(); // Set initials in group profile icon
+            // ** In a real app, you would fetch and display group members here from Firestore **
+            const members = ['Member 1', 'Member 2', '...']; // Placeholder members
+            displayGroupMembers(members);
+            console.log("openChatroom called for:", stateName); // ADD THIS LOG
+
+            if (stateName === 'Kathas List') {
+                displayKathasListTable(); // Call function to display Kathas table
+                document.getElementById('messageText').style.display = 'none'; // Hide message input
+                document.getElementById('sendMessage').style.display = 'none'; // Hide send button
+                document.querySelector('.file-upload-container').style.display = 'none'; // Hide file upload
+            } else {
+                loadMessages(stateName); // Load messages for other chatrooms
+                document.getElementById('messageText').style.display = 'inline-block'; // Show message input
+                document.getElementById('sendMessage').style.display = 'inline-block'; // Show send button
+                document.querySelector('.file-upload-container').style.display = 'inline-flex'; // Show file upload
+            }
+            closeGroupSettings(); // Ensure chat view is shown initially when opening chatroom
+            closeAccountSettings(); // Ensure account settings are closed when opening chatroom
+            hideAdminDashboard(); // Ensure admin dashboard is closed when opening chatroom
+            hideGeminiSection(); // Ensure gemini section is closed when opening chatroom
+            hideSettingsSection(); // Ensure settings sidebar is closed when opening chatroom
+        }
+
+        function displayGroupMembers(members) {
+            const groupMembersList = document.getElementById('groupMembersList');
+            groupMembersList.innerHTML = ''; // Clear previous list
+            members.forEach(member => {
+                const li = document.createElement('li');
+                li.textContent = member;
+                groupMembersList.appendChild(li);
+            });
+        }
+
+        function toggleGroupSettings() {
+            isGroupSettingsVisible = !isGroupSettingsVisible;
+            const chatMessageContainer = document.getElementById('chatMessageContainer');
+            const groupSettingsPage = document.getElementById('groupSettingsPage');
+
+            if (isGroupSettingsVisible) {
+                chatMessageContainer.style.display = 'none';
+                groupSettingsPage.style.display = 'flex'; // Use flex to display group settings page
+                closeAccountSettings(); // Close account settings if open
+                hideAdminDashboard(); // Close admin dashboard if open
+                hideGeminiSection(); // Close gemini section if open
+                hideSettingsSection(); // Close settings sidebar if open
+            } else {
+                chatMessageContainer.style.display = 'flex'; // Use flex to display chat message container
+                groupSettingsPage.style.display = 'none';
+            }
+        }
+
+        function closeGroupSettings() {
+            isGroupSettingsVisible = false;
+            const chatMessageContainer = document.getElementById('chatMessageContainer');
+            const groupSettingsPage = document.getElementById('groupSettingsPage');
+
+            chatMessageContainer.style.display = 'flex'; // Ensure chat message container is visible
+            groupSettingsPage.style.display = 'none'; // Hide group settings page
+        }
+
+        function toggleAccountSettings() {
+            isAccountSettingsVisible = !isAccountSettingsVisible;
+            const accountSettingsDropdown = document.getElementById('accountSettingsDropdown');
+
+            if (isAccountSettingsVisible) {
+                accountSettingsDropdown.style.display = 'block';
+                closeGroupSettings(); // Close group settings if open
+                hideAdminDashboard(); // Close admin dashboard if open
+                hideGeminiSection(); // Close gemini section if open
+                hideSettingsSection(); // Close settings sidebar if open
+            } else {
+                accountSettingsDropdown.style.display = 'none';
+            }
+        }
+
+        function closeAccountSettings() {
+            isAccountSettingsVisible = false;
+            const accountSettingsDropdown = document.getElementById('accountSettingsDropdown');
+            accountSettingsDropdown.style.display = 'none';
+        }
+
+        function toggleAdminDashboard() {
+            isAdminDashboardVisible = !isAdminDashboardVisible;
+            const chatSection = document.getElementById('chatSection');
+            const adminDashboardSection = document.getElementById('adminDashboardSection');
+            const adminDashboardButton = document.getElementById('adminDashboardButton'); // Get the button again to update text
+
+             if (isAdminDashboardVisible) {
+                chatSection.style.display = 'none';
+                adminDashboardSection.style.display = 'block';
+                closeGroupSettings();
+                closeAccountSettings();
+                hideGeminiSection();
+                hideSettingsSection();
+                adminDashboardButton.textContent = '❌ Close Admin Dashboard'; // Change button text to indicate active state
+            } else {
+                chatSection.style.display = 'block';
+                adminDashboardSection.style.display = 'none';
+                adminDashboardButton.textContent = '⚙️ Admin Dashboard ⚙️'; // Change back to original text
+            }
+        }
+
+        function hideAdminDashboard() {
+            isAdminDashboardVisible = false;
+            const chatSection = document.getElementById('chatSection');
+            const adminDashboardSection = document.getElementById('adminDashboardSection');
+            const adminDashboardButton = document.getElementById('adminDashboardButton'); // Get the button again to update text
+
+            chatSection.style.display = 'block';
+            adminDashboardSection.style.display = 'none';
+            adminDashboardButton.textContent = '⚙️ Admin Dashboard ⚙️'; // Change back to original text
+        }
+
+        function showGeminiSection() {
+            showSection('geminiSection');
+            closeGroupSettings();
+            closeAccountSettings();
+            hideAdminDashboard();
+            hideSettingsSection();
+        }
+
+        function hideGeminiSection() {
+            const geminiSection = document.getElementById('geminiSection');
+            const contentDiv = document.querySelector('.content');
+            geminiSection.style.display = 'none';
+            contentDiv.style.display = 'flex'; // Ensure content area is visible
+        }
+
+        function showSettingsSection() {
+            isAdminSettingsSidebarVisible = true;
+            document.getElementById('sidebarButtons').style.display = 'none'; // Hide main buttons
+            document.getElementById('settingsSidebarSection').style.display = 'block'; // Show settings section
+            hideGeminiSection();
+            closeGroupSettings();
+            closeAccountSettings();
+            hideAdminDashboard();
+        }
+
+        function hideSettingsSection() {
+            isAdminSettingsSidebarVisible = false;
+            document.getElementById('sidebarButtons').style.display = 'block'; // Show main buttons
+            document.getElementById('settingsSidebarSection').style.display = 'none'; // Hide settings section
+        }
+
+
+        async function askGeminiAI() {
+            const question = document.getElementById('geminiQuestionInput').value;
+            const geminiResponseDiv = document.getElementById('geminiResponse');
+            geminiResponseDiv.textContent = 'Thinking...';
+
+            const apiKey = 'AIzaSyD-NFL8ghMMf4ibko6AxGXRsp3zhzNZ-Bk'; // **IMPORTANT: API KEY IS EXPOSED IN CLIENT-SIDE CODE - SECURITY RISK!**
+            // **SECURITY WARNING!**  Exposing your API key in client-side code is a major security vulnerability.
+            // In a production application, you MUST move the Gemini API call to a backend server.
+            // Your frontend should send the question to your server, and your server should make the API call
+            // using the API key securely stored on the server.
+
+            // **IMPORTANT:**  REPLACE THIS URL WITH THE CORRECT GEMINI API URL FROM THE OFFICIAL DOCUMENTATION!
+            // **HOW TO FIND THE CORRECT URL:**
+            // 1. Google Search: "Google Gemini API documentation"
+            // 2. Look for the official Google AI for Developers documentation.
+            // 3. Find the REST API reference section.
+            // 4. Navigate to the documentation for the `generateContent` method for the Gemini Pro model.
+            // 5. The documentation will show you the base URL and endpoint for `generateContent`.
+            const apiUrl = 'YOUR_CORRECT_GEMINI_API_URL_HERE'; // <-- **REPLACE THIS PLACEHOLDER!**
+
+            const requestOptions = {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': apiKey
+                },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [{ text: question }]
+                    }]
+                })
+            };
+
+            try {
+                const response = await fetch(apiUrl, requestOptions);
+                if (!response.ok) { // Check if response was successful (status code 2xx)
+                    console.error(`Gemini API HTTP error! status: ${response.status}`);
+                    geminiResponseDiv.textContent = 'Error: Could not retrieve response from Gemini AI. HTTP error.';
+                    return; // Exit the function if there's an HTTP error
+                }
+                const data = await response.json();
+
+                if (data.candidates && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0].text) {
+                    geminiResponseDiv.textContent = data.candidates[0].content.parts[0].text;
+                } else {
+                    geminiResponseDiv.textContent = 'Error: Could not retrieve response from Gemini AI. No text in response.';
+                    console.error('Gemini AI response error:', data);
+                }
+            } catch (error) {
+                geminiResponseDiv.textContent = 'Error communicating with Gemini AI. See console.';
+                console.error('Error asking Gemini AI:', error);
+            }
+        }
+
+
+        async function loadMessages(stateName) {
+            console.log("loadMessages called for:", stateName); // ADD THIS LOG
+            const chatMessages = document.getElementById('chatMessages');
+            chatMessages.innerHTML = '';
+
+            const chatRef = collection(db, 'chatrooms', stateName, 'messages');
+            const q = query(chatRef, orderBy('timestamp'));
+
+            onSnapshot(q, (querySnapshot) => {
+                chatMessages.innerHTML = '';
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    const messageDiv = document.createElement('div');
+                    let messageContent = '';
+
+                    if (data.type === 'text') {
+                        messageContent = `<strong>${data.sender}:</strong> ${data.text}`;
+                    } else if (data.type === 'file') {
+                        messageContent = `<strong>${data.sender}:</strong> <a href="${data.fileUrl}" target="_blank">📄 ${data.fileName}</a>`;
+                    }
+
+                    const timestamp = data.timestamp ? new Date(data.timestamp.toDate()) : new Date(); // Handle potential null timestamp and convert to Date object
+                    const formattedTime = timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); // Format time
+
+                    messageDiv.innerHTML = `${messageContent} <span class="message-time">(${formattedTime})</span>`;
+
+
+                    if (data.sender === 'User') {
+                        messageDiv.classList.add('user-message');
+                    } else {
+                        messageDiv.classList.add('other-message');
+                    }
+
+                    // ---  DELETE BUTTONS ---
+                    if (isAdminUser(currentSenderName)) {
+                        const deleteButton = document.createElement('button');
+                        deleteButton.classList.add('admin-delete-button');
+                        deleteButton.innerHTML = '<i class="fas fa-trash-alt"></i>'; // Trash icon for delete
+                        deleteButton.onclick = function() {
+                            if (confirm('Are you sure you want to delete this message? (Admin Delete)')) {
+                                deleteChatMessage(stateName, doc.id, true); // isAdminDelete = true
+                            }
+                        };
+                        messageDiv.appendChild(deleteButton);
+                    }
+
+
+                    chatMessages.appendChild(messageDiv);
+                    chatMessages.scrollTop = chatMessages.scrollHeight;
+                });
+            });
+        }
+
+        async function sendMessage() {
+            const messageText = document.getElementById('messageText').value.trim();
+            if (messageText && currentChatState) {
+                try {
+                    await addDoc(collection(db, 'chatrooms', currentChatState, 'messages'), {
+                        sender: currentSenderName, // Use currentSenderName here
+                        text: messageText,
+                        timestamp: new Date(),
+                        type: 'text' // Message type is text
+                    });
+                    document.getElementById('messageText').value = '';
+
+                    // **Rejection Message Detection Logic**
+                    const lowerCaseMessage = messageText.toLowerCase();
+                    if (currentSenderName === 'Team 1 CO' && (lowerCaseMessage.includes("cannot come to work this month") || lowerCaseMessage.includes("cannot come to work") || lowerCaseMessage.includes("cannot work this month") || lowerCaseMessage.includes("cannot work"))) {
+                        console.log("Rejection message detected from Team 1 CO.");
+                        alert("Team 1 CO has indicated they cannot select the current applicant. Releasing current applicant and selecting next if available. Anyone can apply for Seva.");
+                        await rejectCurrentApplicant(); // Trigger rejection and re-selection flow
+                    }
+
+
+                } catch (error) {
+                    console.error("Error sending message:", error);
+                    console.error("Full error object:", error);
+                    alert('Error sending message.');
+                }
+            }
+        }
+
+        // --- Delete Chat Message Function ---
+        async function deleteChatMessage(chatroomName, messageId, isAdminDelete = false) {
+            try {
+                await deleteDoc(doc(db, 'chatrooms', chatroomName, 'messages', messageId));
+                console.log(`✅ Message deleted successfully. Message ID: ${messageId}, Chatroom: ${chatroomName}${isAdminDelete ? ' (Admin Delete)' : ''}`);
+                if (isAdminDelete) {
+                    alert('Message deleted by Admin.');
+                }
+            } catch (error) {
+                console.error("❌ Error deleting message:", error);
+                console.error("Full error object:", error);
+                alert('Error deleting message. See console for details.');
+            }
+        }
+
+        // --- File Upload Handlers ---
+        async function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) {
+                return;
+            }
+
+            if (!currentChatState) {
+                alert('Please select a chatroom first.');
+                return;
+            }
+
+            const storageRef = ref(storage, `chat-files/${currentChatState}/${file.name}`);
+
+            try {
+                const snapshot = await uploadBytes(storageRef, file);
+                const downloadURL = await getDownloadURL(snapshot.ref);
+
+                await addDoc(collection(db, 'chatrooms', currentChatState, 'messages'), {
+                    sender: currentSenderName, // Use currentSenderName
+                    fileName: file.name,
+                    fileUrl: downloadURL,
+                    timestamp: new Date(),
+                    type: 'file' // Message type is file
+                });
+
+                console.log('File uploaded successfully!', downloadURL);
+            } catch (error) {
+                console.error('Error uploading file:', error);
+                alert('Error uploading file. See console for details.');
+            } finally {
+                // Clear the file input after upload
+                document.getElementById('fileInput').value = '';
+            }
+        }
+
+
+        function showSection(sectionId) {
+            document.querySelectorAll('.seva-section, .donation-section, .leaderboard-section, .chat-section, .admin-dashboard-section, .gemini-section')
+                .forEach(section => section.style.display = 'none');
+            document.getElementById(sectionId).style.display = 'block';
+        }
+
+        window.showSection = showSection;
+        window.openChatroom = openChatroom;
+        window.selectNextApplicant = selectNextApplicant; // Make globally accessible for testing
+        window.rejectSevaApplication = rejectSevaApplication; // Make globally accessible for testing
+        window.rejectCurrentApplicant = rejectCurrentApplicant; // Make globally accessible for testing
+        window.sendChatroomMessage = sendChatroomMessage; // Make globally accessible for testing
+        window.deleteChatMessage = deleteChatMessage; // Make globally accessible for testing
+        window.toggleGroupSettings = toggleGroupSettings; // Make globally accessible for testing
+        window.closeGroupSettings = closeGroupSettings; // Make globally accessible for testing
+        window.toggleAccountSettings = toggleAccountSettings; // Make globally accessible for testing
+        window.closeAccountSettings = closeAccountSettings; // Make closeAccountSettings globally accessible
+        window.setTheme = setTheme; // Make setTheme globally accessible
+        window.toggleAdminDashboard = toggleAdminDashboard; // Make toggleAdminDashboard globally accessible
+        window.hideAdminDashboard = hideAdminDashboard; // Make hideAdminDashboard globally accessible
+        window.showGeminiSection = showGeminiSection; // Make showGeminiSection globally accessible
+        window.hideGeminiSection = hideGeminiSection; // Make hideGeminiSection globally accessible
+        window.askGeminiAI = askGeminiAI; // Make askGeminiAI globally accessible
+        window.showSettingsSection = showSettingsSection; // Make showSettingsSection globally accessible
+        window.hideSettingsSection = hideSettingsSection; // Make hideSettingsSection globally accessible
+
+
+        function displayKathasListTable() {
+            const kathasList = [
+                { date: '2025-01-04', location: 'खुर्री हालेकोसा राजनन्दगाँव', status: 'Completed', dateDisplay: '4 से 10 जनवरी 2025' },
+                { date: '2025-01-16', location: 'सूरत गुजरात', status: 'Completed', dateDisplay: '16 से 22 जनवरी 2025' },
+                { date: '2025-01-24', location: 'साकरी महाराष्ट्र', status: 'Completed', dateDisplay: '24 से 30 जनवरी 2025' },
+                { date: '2025-02-01', location: 'कांकेर  छत्तीसगढ़', status: 'Completed', dateDisplay: '1 से 7 फरवरी 2025' },
+                { date: '2025-02-09', location: 'फरीदाबाद (हरयाणा) – सेक्टर नंबर 12 के ग्राउंड इंडियन आयल RD के सामने', status: 'Completed', dateDisplay: '9 फरवरी 2025' },
+                { date: '2025-02-10', location: 'प्रयागराज', status: 'Completed', dateDisplay: '10 से 16 फरवरी 2025' },
+                { date: '2025-02-17', location: 'ताराबाबा की कुटिया सिरसा', status: 'Completed', dateDisplay: '17 से 23 फरवरी 2025' },
+                { date: '2025-02-25', location: 'रुद्राक्ष महोत्सव सीहोर', status: 'Completed', dateDisplay: '25 फरवरी से 3 मार्च 2025' },
+                { date: '2025-03-06', location: 'भटिंडा पंजाब', status: 'LIVE', dateDisplay: '6 से 10 मार्च 2025' },
+                { date: '2025-03-21', location: 'जशपुर छत्तीसगढ़', status: 'Upcoming', dateDisplay: '21 से 28 मार्च 2025' },
+                { date: '2025-04-11', location: 'रतनगढ़ राजस्थान', status: 'Upcoming', dateDisplay: '11 से 17 अप्रैल 2025' },
+                { date: '2025-04-21', location: 'सिघेस्वर बिहार', status: 'Upcoming', dateDisplay: '21 से 27 अप्रैल 2025' }
+            ];
+
+            // Sort Kathas by date ascending (opposite order)
+            kathasList.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+
+            const chatMessagesDiv = document.getElementById('chatMessages');
+            chatMessagesDiv.innerHTML = ''; // Clear existing messages
+
+            const table = document.createElement('table');
+            table.style.width = '100%';
+            table.style.borderCollapse = 'collapse';
+            table.style.marginTop = '10px';
+
+            const thead = table.createTHead();
+            let headerRow = thead.insertRow();
+            const headers = ['Date', 'Location', 'Status'];
+            headers.forEach(headerText => {
+                let th = document.createElement('th');
+                th.textContent = headerText;
+                th.style.borderBottom = '2px solid #00e6e6'; // Style header border
+                th.style.padding = '8px';
+                th.style.textAlign = 'left';
+                headerRow.appendChild(th);
+            });
+
+            const tbody = table.createTBody();
+            kathasList.forEach(katha => {
+                let row = tbody.insertRow();
+                let dateCell = row.insertCell();
+                let locationCell = row.insertCell();
+                let statusCell = row.insertCell();
+
+                dateCell.textContent = katha.dateDisplay;
+                locationCell.textContent = katha.location;
+                statusCell.textContent = katha.status;
+
+                [dateCell, locationCell, statusCell].forEach(cell => {
+                    cell.style.borderBottom = '1px solid #004080'; // Style cell border
+                    cell.style.padding = '8px';
+                });
+            });
+
+            chatMessagesDiv.appendChild(table);
+        }
+
+
+    </script>
+
+    <style>
+        body {
+            background: linear-gradient(135deg, #001a33, #004080);
+            color: #fff;
+            font-family: 'Poppins', sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden; /* Prevent scrollbar for body */
+        }
+
+        /* --- Theme: Default (Existing Styles - Enhanced Glows) --- */
+        body.theme-default {
+            background: linear-gradient(135deg, #001a33, #004080);
+            color: #fff;
+        }
+        body.theme-default .sidebar {
+            background-color: #00264d;
+            box-shadow: 0 0 40px #00e6e6; /* Stronger sidebar shadow */
+        }
+        body.theme-default .sidebar-buttons button {
+            background-color: #00e6e6;
+            color: #001a33;
+            box-shadow: 0 0 30px #00e6e6; /* Stronger button shadow */
+        }
+        body.theme-default .seva-section, body.theme-default .donation-section, body.theme-default .leaderboard-section, body.theme-default .chat-section, body.theme-default .admin-dashboard-section, body.theme-default .gemini-section {
+            background: rgba(0, 26, 51, 0.9);
+            border: 3px solid #00e6e6;
+            box-shadow: 0 0 50px #00e6e6; /* Stronger section shadow */
+        }
+        body.theme-default .seva-section h2, body.theme-default .donation-section h2, body.theme-default .leaderboard-section h2, body.theme-default .chat-section h2, body.theme-default .admin-dashboard-section h2, body.theme-default .gemini-section h2 {
+            text-shadow: 0 0 15px #00e6e6; /* Glow for section titles */
+        }
+        body.theme-default .seva-section input, body.theme-default .seva-section select, body.theme-default .chat-section input, body.theme-default .gemini-section input {
+            border: 2px solid #00e6e6;
+            background-color: #001a33;
+            color: #00e6e6;
+            box-shadow: 0 0 10px rgba(0, 230, 230, 0.5); /* Input glow */
+        }
+        body.theme-default .seva-section input:focus, body.theme-default .seva-section select:focus, body.theme-default .chat-section input:focus, body.theme-default .gemini-section input:focus {
+            box-shadow: 0 0 20px #00e6e6; /* Stronger input glow on focus */
+        }
+        body.theme-default #submitSeva, body.theme-default .donation-section a, body.theme-default #sendMessage, body.theme-default .file-upload-container, body.theme-default .state-list button, body.theme-default #adminDashboardButton, body.theme-default #askGeminiButton, body.theme-default #settingsButtonSidebar, body.theme-default #closeSettingsSidebar {
+            background-color: #00e6e6;
+            color: #001a33;
+            box-shadow: 0 0 35px #00e6e6; /* Stronger action button shadow */
+        }
+        body.theme-default #chatMessages, body.theme-default #geminiResponse {
+            background-color: #001a33;
+            color: #fff;
+            border: 1px solid #00e6e6;
+            box-shadow: inset 0 0 15px rgba(0, 230, 230, 0.3); /* Inner glow for chat messages */
+        }
+        body.theme-default .user-message {
+            background-color: #004d99;
+            box-shadow: 0 0 10px rgba(0, 77, 153, 0.5); /* User message glow */
+        }
+        body.theme-default .other-message {
+            background-color: #007acc;
+            box-shadow: 0 0 10px rgba(0, 122, 204, 0.5); /* Other message glow */
+        }
+        body.theme-default .group-profile-icon, body.theme-default .account-settings-icon {
+            background-color: #00e6e6;
+            color: #001a33;
+            box-shadow: 0 0 20px #00e6e6; /* Stronger icon shadow */
+        }
+        body.theme-default .group-settings-dropdown, body.theme-default .account-settings-dropdown {
+            background-color: #00264d;
+            border: 2px solid #00e6e6;
+            box-shadow: 0 0 30px #00e6e6; /* Stronger dropdown shadow */
+        }
+        body.theme-default .close-group-settings-button, body.theme-default #closeAccountSettings, body.theme-default #closeAdminDashboardButton {
+            color: #00e6e6;
+            text-shadow: 0 0 10px #00e6e6; /* Glow for close buttons */
+        }
+        body.theme-default .message-time {
+            color: #aaa;
+            text-shadow: 0 0 5px rgba(170, 170, 170, 0.3); /* Subtle glow for message time */
+        }
+        body.theme-default .leaderboard-section ul li {
+            border-bottom: 1px solid rgba(0, 230, 230, 0.2); /* Leaderboard list item separator glow */
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+        }
+
+
+        /* --- Theme: Dark A - Enhanced Glows --- */
+        body.theme-dark-a {
+            background-color: #121212;
+            color: #e0e0e0;
+        }
+        body.theme-dark-a .sidebar {
+            background-color: #1e1e1e;
+            box-shadow: 0 0 40px #bb86fc;
+        }
+        body.theme-dark-a .sidebar-buttons button {
+            background-color: #bb86fc;
+            color: #121212;
+            box-shadow: 0 0 30px #bb86fc;
+        }
+        body.theme-dark-a .seva-section, body.theme-dark-a .donation-section, body.theme-dark-a .leaderboard-section, body.theme-dark-a .chat-section, body.theme-dark-a .admin-dashboard-section, body.theme-dark-a .gemini-section {
+            background: rgba(18, 18, 18, 0.9);
+            border: 3px solid #bb86fc;
+            box-shadow: 0 0 50px #bb86fc;
+        }
+         body.theme-dark-a .seva-section h2, body.theme-dark-a .donation-section h2, body.theme-dark-a .leaderboard-section h2, body.theme-dark-a .chat-section h2, body.theme-dark-a .admin-dashboard-section h2, body.theme-dark-a .gemini-section h2 {
+            text-shadow: 0 0 15px #bb86fc;
+        }
+        body.theme-dark-a .seva-section input, body.theme-dark-a .seva-section select, body.theme-dark-a .chat-section input, body.theme-dark-a .gemini-section input {
+            border: 2px solid #bb86fc;
+            background-color: #1e1e1e;
+            color: #e0e0e0;
+            box-shadow: 0 0 10px rgba(187, 134, 252, 0.5);
+        }
+        body.theme-dark-a .seva-section input:focus, body.theme-dark-a .seva-section select:focus, body.theme-dark-a .chat-section input:focus, body.theme-dark-a .gemini-section input:focus {
+            box-shadow: 0 0 20px #bb86fc;
+        }
+        body.theme-dark-a #submitSeva, body.theme-dark-a .donation-section a, body.theme-dark-a #sendMessage, body.theme-dark-a .file-upload-container, body.theme-dark-a .state-list button, body.theme-dark-a #adminDashboardButton, body.theme-dark-a #askGeminiButton, body.theme-dark-a #settingsButtonSidebar, body.theme-dark-a #closeSettingsSidebar {
+            background-color: #bb86fc;
+            color: #121212;
+            box-shadow: 0 0 35px #bb86fc;
+        }
+        body.theme-dark-a #chatMessages, body.theme-dark-a #geminiResponse {
+            background-color: #1e1e1e;
+            color: #e0e0e0;
+            border: 1px solid #bb86fc;
+            box-shadow: inset 0 0 15px rgba(187, 134, 252, 0.3);
+        }
+        body.theme-dark-a .user-message {
+            background-color: #3700b3;
+            color: #fff;
+            box-shadow: 0 0 10px rgba(55, 0, 179, 0.5);
+        }
+        body.theme-dark-a .other-message {
+            background-color: #6200ee;
+            color: #fff;
+            box-shadow: 0 0 10px rgba(98, 0, 238, 0.5);
+        }
+        body.theme-dark-a .group-profile-icon, body.theme-dark-a .account-settings-icon {
+            background-color: #bb86fc;
+            color: #121212;
+            box-shadow: 0 0 20px #bb86fc;
+        }
+        body.theme-dark-a .group-settings-dropdown, body.theme-dark-a .account-settings-dropdown {
+            background-color: #1e1e1e;
+            border: 2px solid #bb86fc;
+            box-shadow: 0 0 30px #bb86fc;
+        }
+        body.theme-dark-a .close-group-settings-button, body.theme-dark-a #closeAccountSettings, body.theme-dark-a #closeAdminDashboardButton {
+            color: #bb86fc;
+            text-shadow: 0 0 10px #bb86fc;
+        }
+        body.theme-dark-a .message-time {
+            color: #9e9e9e;
+            text-shadow: 0 0 5px rgba(158, 158, 158, 0.3);
+        }
+        body.theme-dark-a .leaderboard-section ul li {
+            border-bottom: 1px solid rgba(187, 134, 252, 0.2);
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+        }
+
+        /* --- Theme: White - Enhanced Glows --- */
+        body.theme-white {
+            background-color: #f0f0f0;
+            color: #333;
+        }
+        body.theme-white .sidebar {
+            background-color: #eee;
+            box-shadow: 0 0 40px #ddd;
+        }
+        body.theme-white .sidebar-buttons button {
+            background-color: #ddd;
+            color: #333;
+            box-shadow: 0 0 30px #ddd;
+        }
+        body.theme-white .seva-section, body.theme-white .donation-section, body.theme-white .leaderboard-section, body.theme-white .chat-section, body.theme-white .admin-dashboard-section, body.theme-white .gemini-section {
+            background: rgba(240, 240, 240, 0.9);
+            border: 3px solid #ddd;
+            box-shadow: 0 0 50px #ddd;
+        }
+        body.theme-white .seva-section h2, body.theme-white .donation-section h2, body.theme-white .leaderboard-section h2, body.theme-white .chat-section h2, body.theme-white .admin-dashboard-section h2, body.theme-white .gemini-section h2 {
+            text-shadow: 0 0 15px #ddd;
+        }
+        body.theme-white .seva-section input, body.theme-white .seva-section select, body.theme-white .chat-section input, body.theme-white .gemini-section input {
+            border: 2px solid #ddd;
+            background-color: #fff;
+            color: #333;
+            box-shadow: 0 0 10px rgba(221, 221, 221, 0.5);
+        }
+        body.theme-white .seva-section input:focus, body.theme-white .seva-section select:focus, body.theme-white .chat-section input:focus, body.theme-white .gemini-section input:focus {
+            box-shadow: 0 0 20px #ddd;
+        }
+        body.theme-white #submitSeva, body.theme-white .donation-section a, body.theme-white #sendMessage, body.theme-white .file-upload-container, body.theme-white .state-list button, body.theme-white #adminDashboardButton, body.theme-white #askGeminiButton, body.theme-white #settingsButtonSidebar, body.theme-white #closeSettingsSidebar {
+            background-color: #ddd;
+            color: #333;
+            box-shadow: 0 0 35px #ddd;
+        }
+        body.theme-white #chatMessages, body.theme-white #geminiResponse {
+            background-color: #fff;
+            color: #333;
+            border: 1px solid #ddd;
+            box-shadow: inset 0 0 15px rgba(221, 221, 221, 0.3);
+        }
+        body.theme-white .user-message {
+            background-color: #e0e0e0;
+            color: #333;
+            box-shadow: 0 0 10px rgba(224, 224, 224, 0.5);
+        }
+        body.theme-white .other-message {
+            background-color: #ccc;
+            color: #333;
+            box-shadow: 0 0 10px rgba(204, 204, 204, 0.5);
+        }
+        body.theme-white .group-profile-icon, body.theme-white .account-settings-icon {
+            background-color: #ddd;
+            color: #333;
+            box-shadow: 0 0 20px #ddd;
+        }
+        body.theme-white .group-settings-dropdown, body.theme-white .account-settings-dropdown {
+            background-color: #eee;
+            border: 2px solid #ddd;
+            box-shadow: 0 0 30px #ddd;
+        }
+        body.theme-white .close-group-settings-button, body.theme-white #closeAccountSettings, body.theme-white #closeAdminDashboardButton {
+            color: #ddd;
+            text-shadow: 0 0 10px #ddd;
+        }
+        body.theme-white .message-time {
+            color: #777;
+            text-shadow: 0 0 5px rgba(119, 119, 119, 0.3);
+        }
+         body.theme-white .leaderboard-section ul li {
+            border-bottom: 1px solid rgba(221, 221, 221, 0.2);
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+        }
+
+        /* --- Theme: Theme 4 (Blue) - Enhanced Glows --- */
+        body.theme-theme4 {
+            background-color: #e3f2fd;
+            color: #1a237e;
+        }
+        body.theme-theme4 .sidebar {
+            background-color: #bbdefb;
+            box-shadow: 0 0 40px #90caf9;
+        }
+        body.theme-theme4 .sidebar-buttons button {
+            background-color: #90caf9;
+            color: #1a237e;
+            box-shadow: 0 0 30px #90caf9;
+        }
+        body.theme-theme4 .seva-section, body.theme-theme4 .donation-section, body.theme-theme4 .leaderboard-section, body.theme-theme4 .chat-section, body.theme-theme4 .admin-dashboard-section, body.theme-theme4 .gemini-section {
+            background: rgba(227, 242, 253, 0.9);
+            border: 3px solid #90caf9;
+            box-shadow: 0 0 50px #90caf9;
+        }
+        body.theme-theme4 .seva-section h2, body.theme-theme4 .donation-section h2, body.theme-theme4 .leaderboard-section h2, body.theme-theme4 .chat-section h2, body.theme-theme4 .admin-dashboard-section h2, body.theme-theme4 .gemini-section h2 {
+            text-shadow: 0 0 15px #90caf9;
+        }
+        body.theme-theme4 .seva-section input, body.theme-theme4 .seva-section select, body.theme-theme4 .chat-section input, body.theme-theme4 .gemini-section input {
+            border: 2px solid #90caf9;
+            background-color: #fff;
+            color: #1a237e;
+            box-shadow: 0 0 10px rgba(144, 202, 249, 0.5);
+        }
+        body.theme-theme4 .seva-section input:focus, body.theme-theme4 .seva-section select:focus, body.theme-theme4 .chat-section input:focus, body.theme-theme4 .gemini-section input:focus {
+            box-shadow: 0 0 20px #90caf9;
+        }
+        body.theme-theme4 #submitSeva, body.theme-theme4 .donation-section a, body.theme-theme4 #sendMessage, body.theme-theme4 .file-upload-container, body.theme-theme4 .state-list button, body.theme-theme4 #adminDashboardButton, body.theme-theme4 #askGeminiButton, body.theme-theme4 #settingsButtonSidebar, body.theme-theme4 #closeSettingsSidebar {
+            background-color: #90caf9;
+            color: #1a237e;
+            box-shadow: 0 0 35px #90caf9;
+        }
+        body.theme-theme4 #chatMessages, body.theme-theme4 #geminiResponse {
+            background-color: #fff;
+            color: #1a237e;
+            border: 1px solid #90caf9;
+            box-shadow: inset 0 0 15px rgba(144, 202, 249, 0.3);
+        }
+        body.theme-theme4 .user-message {
+            background-color: #90caf9;
+            color: #fff;
+            box-shadow: 0 0 10px rgba(144, 202, 249, 0.5);
+        }
+        body.theme-theme4 .other-message {
+            background-color: #64b5f6;
+            color: #fff;
+            box-shadow: 0 0 10px rgba(100, 181, 246, 0.5);
+        }
+        body.theme-theme4 .group-profile-icon, body.theme-theme4 .account-settings-icon {
+            background-color: #90caf9;
+            color: #1a237e;
+            box-shadow: 0 0 20px #90caf9;
+        }
+        body.theme-theme4 .group-settings-dropdown, body.theme-theme4 .account-settings-dropdown {
+            background-color: #bbdefb;
+            border: 2px solid #90caf9;
+            box-shadow: 0 0 30px #90caf9;
+        }
+        body.theme-theme4 .close-group-settings-button, body.theme-theme4 #closeAccountSettings, body.theme-theme4 #closeAdminDashboardButton {
+            color: #90caf9;
+            text-shadow: 0 0 10px #90caf9;
+        }
+        body.theme-theme4 .message-time {
+            color: #7986cb;
+            text-shadow: 0 0 5px rgba(121, 134, 203, 0.3);
+        }
+        body.theme-theme4 .leaderboard-section ul li {
+            border-bottom: 1px solid rgba(144, 202, 249, 0.2);
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+        }
+
+        /* --- Theme: Theme 5 (Green) - Enhanced Glows --- */
+        body.theme-theme5 {
+            background-color: #f1f8e9;
+            color: #1b5e20;
+        }
+        body.theme-theme5 .sidebar {
+            background-color: #dcedc8;
+            box-shadow: 0 0 40px #c5e1a5;
+        }
+        body.theme-theme5 .sidebar-buttons button {
+            background-color: #c5e1a5;
+            color: #1b5e20;
+            box-shadow: 0 0 30px #c5e1a5;
+        }
+        body.theme-theme5 .seva-section, body.theme-theme5 .donation-section, body.theme-theme5 .leaderboard-section, body.theme-theme5 .chat-section, body.theme-theme5 .admin-dashboard-section, body.theme-theme5 .gemini-section {
+            background: rgba(241, 248, 233, 0.9);
+            border: 3px solid #c5e1a5;
+            box-shadow: 0 0 50px #c5e1a5;
+        }
+        body.theme-theme5 .seva-section h2, body.theme-theme5 .donation-section h2, body.theme-theme5 .leaderboard-section h2, body.theme-theme5 .chat-section h2, body.theme-theme5 .admin-dashboard-section h2, body.theme-theme5 .gemini-section h2 {
+            text-shadow: 0 0 15px #c5e1a5;
+        }
+        body.theme-theme5 .seva-section input, body.theme-theme5 .seva-section select, body.theme-theme5 .chat-section input, body.theme-theme5 .gemini-section input {
+            border: 2px solid #c5e1a5;
+            background-color: #fff;
+            color: #1b5e20;
+            box-shadow: 0 0 10px rgba(197, 225, 165, 0.5);
+        }
+        body.theme-theme5 .seva-section input:focus, body.theme-theme5 .seva-section select:focus, body.theme-theme5 .chat-section input:focus, body.theme-theme5 .gemini-section input:focus {
+            box-shadow: 0 0 20px #c5e1a5;
+        }
+        body.theme-theme5 #submitSeva, body.theme-theme5 .donation-section a, body.theme-theme5 #sendMessage, body.theme-theme5 .file-upload-container, body.theme-theme5 .state-list button, body.theme-theme5 #adminDashboardButton, body.theme-theme5 #askGeminiButton, body.theme-theme5 #settingsButtonSidebar, body.theme-theme5 #closeSettingsSidebar {
+            background-color: #c5e1a5;
+            color: #1b5e20;
+            box-shadow: 0 0 35px #c5e1a5;
+        }
+        body.theme-theme5 #chatMessages, body.theme-theme5 #geminiResponse {
+            background-color: #fff;
+            color: #1b5e20;
+            border: 1px solid #c5e1a5;
+            box-shadow: inset 0 0 15px rgba(197, 225, 165, 0.3);
+        }
+        body.theme-theme5 .user-message {
+            background-color: #c5e1a5;
+            color: #fff;
+            box-shadow: 0 0 10px rgba(197, 225, 165, 0.5);
+        }
+        body.theme-theme5 .other-message {
+            background-color: #a5d6a7;
+            color: #fff;
+            box-shadow: 0 0 10px rgba(165, 214, 167, 0.5);
+        }
+        body.theme-theme5 .group-profile-icon, body.theme-theme5 .account-settings-icon {
+            background-color: #c5e1a5;
+            color: #1b5e20;
+            box-shadow: 0 0 20px #c5e1a5;
+        }
+        body.theme-theme5 .group-settings-dropdown, body.theme-theme5 .account-settings-dropdown {
+            background-color: #dcedc8;
+            border: 2px solid #c5e1a5;
+            box-shadow: 0 0 30px #c5e1a5;
+        }
+        body.theme-theme5 .close-group-settings-button, body.theme-theme5 #closeAccountSettings, body.theme-theme5 #closeAdminDashboardButton {
+            color: #c5e1a5;
+            text-shadow: 0 0 10px #c5e1a5;
+        }
+        body.theme-theme5 .message-time {
+            color: #7cb342;
+            text-shadow: 0 0 5px rgba(124, 179, 66, 0.3);
+        }
+        body.theme-theme5 .leaderboard-section ul li {
+            border-bottom: 1px solid rgba(197, 225, 165, 0.2);
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+        }
+
+
+        /* --- NEW THEME: Neon Orange --- */
+        body.theme-neon-orange {
+            background-color: #0a0a0a; /* Dark background for neon effect */
+            color: #ffffff; /* White text for contrast */
+        }
+        body.theme-neon-orange .sidebar {
+            background-color: #1a1a1a;
+            box-shadow: 0 0 50px #ff9933; /* Neon orange sidebar shadow */
+        }
+        body.theme-neon-orange .sidebar-buttons button {
+            background-color: #ff9933;
+            color: #0a0a0a;
+            box-shadow: 0 0 40px #ff9933; /* Neon orange button shadow */
+            text-shadow: 0 0 10px #ff9933; /* Neon orange button text shadow */
+        }
+        body.theme-neon-orange .seva-section, body.theme-neon-orange .donation-section, body.theme-neon-orange .leaderboard-section, body.theme-neon-orange .chat-section, body.theme-neon-orange .admin-dashboard-section, body.theme-neon-orange .gemini-section {
+            background: rgba(10, 10, 10, 0.9);
+            border: 3px solid #ff9933;
+            box-shadow: 0 0 60px #ff9933; /* Neon orange section shadow */
+        }
+        body.theme-neon-orange .seva-section h2, body.theme-neon-orange .donation-section h2, body.theme-neon-orange .leaderboard-section h2, body.theme-neon-orange .chat-section h2, body.theme-neon-orange .admin-dashboard-section h2, body.theme-neon-orange .gemini-section h2 {
+            text-shadow: 0 0 20px #ff9933; /* Neon orange section title shadow */
+        }
+        body.theme-neon-orange .seva-section input, body.theme-neon-orange .seva-section select, body.theme-neon-orange .chat-section input, body.theme-neon-orange .gemini-section input {
+            border: 2px solid #ff9933;
+            background-color: #1a1a1a;
+            color: #ffcc66; /* Lighter orange input text */
+            box-shadow: 0 0 15px #ff9933; /* Neon orange input glow */
+        }
+        body.theme-neon-orange .seva-section input:focus, body.theme-neon-orange .seva-section select:focus, body.theme-neon-orange .chat-section input:focus, body.theme-neon-orange .gemini-section input:focus {
+            box-shadow: 0 0 30px #ff9933; /* Stronger neon orange input glow on focus */
+        }
+        body.theme-neon-orange #submitSeva, body.theme-neon-orange .donation-section a, body.theme-neon-orange #sendMessage, body.theme-neon-orange .file-upload-container, body.theme-neon-orange .state-list button, body.theme-neon-orange #adminDashboardButton, body.theme-neon-orange #askGeminiButton, body.theme-neon-orange #settingsButtonSidebar, body.theme-neon-orange #closeSettingsSidebar {
+            background-color: #ff9933;
+            color: #0a0a0a;
+            box-shadow: 0 0 45px #ff9933; /* Neon orange action button shadow */
+            text-shadow: 0 0 10px #ff9933; /* Neon orange action button text shadow */
+        }
+        body.theme-neon-orange #chatMessages, body.theme-neon-orange #geminiResponse {
+            background-color: #1a1a1a;
+            color: #ffffff;
+            border: 1px solid #ff9933;
+            box-shadow: inset 0 0 20px rgba(255, 153, 51, 0.4); /* Neon orange chat messages inner glow */
+        }
+        body.theme-neon-orange .user-message {
+            background-color: #cc6600; /* Darker orange user message */
+            box-shadow: 0 0 15px #ff9933; /* Neon orange user message glow */
+        }
+        body.theme-neon-orange .other-message {
+            background-color: #ffb366; /* Lighter orange other message */
+            box-shadow: 0 0 15px #ff9933; /* Neon orange other message glow */
+        }
+        body.theme-neon-orange .group-profile-icon, body.theme-neon-orange .account-settings-icon {
+            background-color: #ff9933;
+            color: #0a0a0a;
+            box-shadow: 0 0 25px #ff9933; /* Neon orange icon shadow */
+        }
+        body.theme-neon-orange .group-settings-dropdown, body.theme-neon-orange .account-settings-dropdown {
+            background-color: #1a1a1a;
+            border: 2px solid #ff9933;
+            box-shadow: 0 0 35px #ff9933; /* Neon orange dropdown shadow */
+        }
+        body.theme-neon-orange .close-group-settings-button, body.theme-neon-orange #closeAccountSettings, body.theme-neon-orange #closeAdminDashboardButton {
+            color: #ff9933;
+            text-shadow: 0 0 15px #ff9933; /* Neon orange close button text shadow */
+        }
+        body.theme-neon-orange .message-time {
+            color: #ffcc99; /* Lighter orange message time */
+            text-shadow: 0 0 10px rgba(255, 204, 153, 0.5); /* Neon orange message time shadow */
+        }
+        body.theme-neon-orange .leaderboard-section ul li {
+            border-bottom: 1px solid rgba(255, 153, 51, 0.3); /* Neon orange leaderboard list item separator glow */
+        }
+
+
+        /* --- NEW THEME: Neon Green --- */
+        body.theme-neon-green {
+            background-color: #0a0a0a; /* Dark background for neon effect */
+            color: #ffffff; /* White text for contrast */
+        }
+        body.theme-neon-green .sidebar {
+            background-color: #1a1a1a; /* Slightly darker sidebar for contrast */
+            box-shadow: 0 0 50px #66ff66; /* Neon green sidebar shadow */
+        }
+        body.theme-neon-green .sidebar-buttons button {
+            background-color: #66ff66;
+            color: #0a0a0a;
+            box-shadow: 0 0 40px #66ff66; /* Neon green button shadow */
+            text-shadow: 0 0 10px #66ff66; /* Neon green button text shadow */
+        }
+        body.theme-neon-green .sidebar-buttons button:hover {
+            background-color: #80ff80; /* Slightly lighter green on hover */
+        }
+        body.theme-neon-green .sidebar-settings-section {
+            background-color: #1a1a1a; /* Match sidebar background */
+        }
+        body.theme-neon-green .sidebar-settings-section h3, body.theme-neon-green .sidebar-settings-section ul li, body.theme-neon-green .sidebar-settings-section #closeSettingsSidebar {
+            color: #99ff99; /* Lighter green text in settings */
+        }
+        body.theme-neon-green .sidebar-settings-section ul li:hover {
+            background-color: #336633; /* Darker green on hover in settings list */
+        }
+        body.theme-neon-green .sidebar-settings-section #closeSettingsSidebar:hover {
+            color: #ccffcc; /* Lighter green on close button hover */
+        }
+
+
+        body.theme-neon-green .seva-section, body.theme-neon-green .donation-section, body.theme-neon-green .leaderboard-section, body.theme-neon-green .chat-section, body.theme-neon-green .admin-dashboard-section, body.theme-neon-green .gemini-section {
+            background: rgba(10, 10, 10, 0.9);
+            border: 3px solid #66ff66;
+            box-shadow: 0 0 60px #66ff66; /* Neon green section shadow */
+        }
+        body.theme-neon-green .seva-section h2, body.theme-neon-green .donation-section h2, body.theme-neon-green .leaderboard-section h2, body.theme-neon-green .chat-section h2, body.theme-neon-green .admin-dashboard-section h2, body.theme-neon-green .gemini-section h2 {
+            text-shadow: 0 0 20px #66ff66; /* Neon green section title shadow */
+        }
+        body.theme-neon-green .seva-section input, body.theme-neon-green .seva-section select, body.theme-neon-green .chat-section input, body.theme-neon-green .gemini-section input {
+            border: 2px solid #66ff66;
+            background-color: #1a1a1a;
+            color: #99ff99; /* Lighter green input text */
+            box-shadow: 0 0 15px #66ff66; /* Neon green input glow */
+        }
+        body.theme-neon-green .seva-section input:focus, body.theme-neon-green .seva-section select:focus, body.theme-neon-green .chat-section input:focus, body.theme-neon-green .gemini-section input:focus {
+            box-shadow: 0 0 30px #66ff66; /* Stronger neon green input glow on focus */
+        }
+        body.theme-neon-green #submitSeva, body.theme-neon-green .donation-section a, body.theme-neon-green #sendMessage, body.theme-neon-green .file-upload-container, body.theme-neon-green .state-list button, body.theme-neon-green #adminDashboardButton, body.theme-neon-green #askGeminiButton, body.theme-neon-green #settingsButtonSidebar, body.theme-neon-green #closeSettingsSidebar {
+            background-color: #66ff66;
+            color: #0a0a0a;
+            box-shadow: 0 0 45px #66ff66; /* Neon green action button shadow */
+            text-shadow: 0 0 10px #66ff66; /* Neon green action button text shadow */
+        }
+        body.theme-neon-green #chatMessages, body.theme-neon-green #geminiResponse {
+            background-color: #1a1a1a;
+            color: #ffffff;
+            border: 1px solid #66ff66;
+            box-shadow: inset 0 0 20px rgba(102, 255, 102, 0.4); /* Neon green chat messages inner glow */
+        }
+        body.theme-neon-green .user-message {
+            background-color: #00cc00; /* Darker green user message */
+            box-shadow: 0 0 15px #66ff66; /* Neon green user message glow */
+        }
+        body.theme-neon-green .other-message {
+            background-color: #99ff99; /* Lighter green other message */
+            box-shadow: 0 0 15px #66ff66; /* Neon green other message glow */
+        }
+        body.theme-neon-green .group-profile-icon, body.theme-neon-green .account-settings-icon {
+            background-color: #66ff66;
+            color: #0a0a0a;
+            box-shadow: 0 0 25px #66ff66; /* Neon green icon shadow */
+        }
+        body.theme-neon-green .group-settings-dropdown, body.theme-neon-green .account-settings-dropdown {
+            background-color: #1a1a1a;
+            border: 2px solid #66ff66;
+            box-shadow: 0 0 35px #66ff66; /* Neon green dropdown shadow */
+        }
+        body.theme-neon-green .close-group-settings-button, body.theme-neon-green #closeAccountSettings, body.theme-neon-green #closeAdminDashboardButton {
+            color: #66ff66;
+            text-shadow: 0 0 15px #66ff66; /* Neon green close button text shadow */
+        }
+        body.theme-neon-green .message-time {
+            color: #ccffcc; /* Lighter green message time */
+            text-shadow: 0 0 10px rgba(204, 255, 204, 0.5); /* Neon green message time shadow */
+        }
+        body.theme-neon-green .leaderboard-section ul li {
+            border-bottom: 1px solid rgba(102, 255, 102, 0.3); /* Neon green leaderboard list item separator glow */
+        }
+
+        /* Table styles for Kathas List */
+        #chatMessages table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            color: #fff; /* Default text color, adjust based on theme */
+        }
+
+        #chatMessages th, #chatMessages td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #004080; /* Default border color, adjust based on theme */
+        }
+
+        #chatMessages th {
+            border-bottom: 2px solid #00e6e6; /* Default header border color, adjust based on theme */
+        }
+
+
+        .sidebar {
+            width: 25%;
+            padding: 20px;
+            box-shadow: 0 0 30px #00e6e6;
+            overflow-y: auto;
+            height: 100vh;
+            position: sticky;
+            top: 0;
+            z-index: 100; /* Ensure sidebar is above content if needed */
+        }
+
+        .sidebar::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .sidebar::-webkit-scrollbar-track {
+            background-color: transparent;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb {
+            background-color: #00e6e6;
+            border-radius: 4px;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb:hover {
+            background-color: #00b3b3;
+        }
+
+
+        .sidebar-buttons button {
+            border: none;
+            padding: 12px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: transform 0.3s ease-in-out, box-shadow 0.3s ease-in-out;
+            animation: subtleGlow 2s infinite alternate;
+        }
+
+        .sidebar-buttons button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 40px #00e6e6; /* Even stronger hover glow */
+        }
+
+
+        @keyframes subtleGlow {
+            from { box-shadow: 0 0 30px #00e6e6; } /* Increased base glow */
+            to { box-shadow: 0 0 40px #00e6e6; } /* Increased animated glow */
+        }
+
+
+        .content {
+            width: 75%;
+            display: flex;
+            align-items: stretch;
+            justify-content: center;
+            padding: 40px;
+            height: 100%;
+            overflow-y: auto; /* Enable scroll for content */
+        }
+
+        .content::-webkit-scrollbar {
+            width: 6px; /* Adjust scrollbar width for content */
+        }
+
+        .content::-webkit-scrollbar-track {
+            background-color: transparent;
+        }
+
+        .content::-webkit-scrollbar-thumb {
+            background-color: #00e6e6;
+            border-radius: 3px;
+        }
+
+        .content::-webkit-scrollbar-thumb:hover {
+            background-color: #00b3b3;
+        }
+
+
+        .seva-section, .donation-section, .leaderboard-section, .chat-section, .admin-dashboard-section, .gemini-section {
+            backdrop-filter: blur(15px);
+            border-radius: 20px;
+            padding: 40px;
+            width: 100%;
+            max-width: none;
+            text-align: left;
+            display: none;
+            flex-direction: column;
+            align-items: stretch;
+            height: 100%;
+            display: flex;
+        }
+
+        .chat-area {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        .chat-header {
+            display: flex;
+            align-items: center;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #00e6e6;
+            margin-bottom: 15px;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            background: rgba(0, 26, 51, 0.9);
+            z-index: 10;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            backdrop-filter: blur(15px);
+        }
+
+        .chat-header h2 {
+            margin-right: 15px;
+            margin-bottom: 0;
+            text-shadow: 0 0 10px #00e6e6; /* Glow for chat header title */
+        }
+
+        .chat-header-icons {
+            display: flex;
+            align-items: center;
+        }
+
+        .group-profile-icon, .account-settings-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-weight: bold;
+            cursor: pointer;
+            position: relative;
+            margin-left: 10px;
+            transition: box-shadow 0.3s ease-in-out;
+            animation: subtleIconGlow 2s infinite alternate;
+        }
+
+        .group-profile-icon:hover, .account-settings-icon:hover {
+            box-shadow: 0 0 30px #00e6e6; /* Stronger icon hover glow */
+        }
+
+
+        @keyframes subtleIconGlow {
+            from { box-shadow: 0 0 20px #00e6e6; } /* Increased base icon glow */
+            to { box-shadow: 0 0 30px #00e6e6; } /* Increased animated icon glow */
+        }
+
+
+        .group-settings-page {
+            display: none;
+            flex-direction: column;
+            height: 100%;
+            padding: 20px;
+        }
+
+        .group-settings-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .group-settings-header h3 {
+            margin: 0;
+             text-shadow: 0 0 10px #00e6e6; /* Glow for group settings title */
+        }
+
+        .close-group-settings-button, #closeAccountSettings, #closeAdminDashboardButton {
+            background: none;
+            border: none;
+            font-size: 1.5em;
+            cursor: pointer;
+            color: #00e6e6; /* Ensure color is set here too */
+             text-shadow: 0 0 10px #00e6e6; /* Glow for close buttons - redundant but ensures it */
+        }
+
+        .account-settings-dropdown {
+            position: absolute;
+            top: 100%;
+            right: 0;
+            display: none;
+            padding: 10px;
+            z-index: 11;
+            width: 200px;
+            text-align: left;
+            box-shadow: 0 0 30px #00e6e6; /* Dropdown shadow */
+        }
+
+        .account-settings-dropdown ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .account-settings-dropdown li {
+            padding: 8px 10px;
+            border-bottom: 1px solid #004080;
+            cursor: pointer;
+            transition: background-color 0.2s ease; /* Hover transition */
+        }
+
+        .account-settings-dropdown li:last-child {
+            border-bottom: none;
+        }
+
+        .account-settings-dropdown li:hover {
+            background-color: #004080;
+        }
+
+
+        .group-settings-dropdown {
+            padding: 10px;
+            text-align: left;
+            margin-bottom: 20px;
+        }
+
+        .group-settings-dropdown h4 {
+            margin-top: 0;
+             text-shadow: 0 0 10px #00e6e6; /* Glow for group members title */
+        }
+
+        .group-settings-dropdown ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .group-settings-dropdown li {
+            padding: 8px 10px;
+            border-bottom: 1px solid #004080;
+            cursor: pointer;
+            transition: background-color 0.2s ease; /* Hover transition */
+        }
+
+        .group-settings-dropdown li:last-child {
+            border-bottom: none;
+        }
+
+        .group-settings-dropdown li:hover {
+            background-color: #004080;
+        }
+
+        .group-settings-options li {
+            padding: 10px 15px;
+            border-bottom: 1px solid #004080;
+            cursor: pointer;
+             transition: background-color 0.2s ease; /* Hover transition */
+        }
+        .group-settings-options li:last-child {
+            border-bottom: none;
+        }
+        .group-settings-options li:hover {
+            background-color: #004080;
+        }
+
+
+        .seva-section input, .seva-section select, .chat-section input, .admin-dashboard-section input, .admin-dashboard-section select, .gemini-section input {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 5px; /* Added border-radius to inputs */
+        }
+
+        #submitSeva, #adminDashboardButton, #askGeminiButton, #settingsButtonSidebar, #closeSettingsSidebar {
+            padding: 12px;
+            border: none;
+            width: 100%;
+            cursor: pointer;
+            border-radius: 5px;
+            animation: pulseGlow 1.5s infinite alternate;
+             text-shadow: 0 0 10px #00e6e6; /* Glow for submit button text */
+        }
+
+        @keyframes pulseGlow {
+            from { box-shadow: 0 0 35px #00e6e6; } /* Increased pulse glow range */
+            to { box-shadow: 0 0 65px #00e6e6; } /* Increased pulse glow range */
+        }
+
+        .donation-section a {
+            display: inline-block;
+            padding: 12px 30px;
+            border-radius: 5px;
+            text-decoration: none;
+             box-shadow: 0 0 35px #00e6e6; /* Donation link shadow */
+        }
+
+        #chatMessages, #geminiResponse {
+            height: 65vh;
+            min-height: 65vh;
+            overflow-y: scroll;
+            padding: 10px;
+            margin-bottom: 10px;
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            border-radius: 10px; /* Added border-radius to chat messages box */
+        }
+
+        #chatMessages::-webkit-scrollbar, #geminiResponse::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        #chatMessages::-webkit-scrollbar-track, #geminiResponse::-webkit-scrollbar-track {
+            background-color: transparent;
+        }
+
+        #chatMessages::-webkit-scrollbar-thumb, #geminiResponse::-webkit-scrollbar-thumb {
+            background-color: #00e6e6;
+            border-radius: 3px;
+        }
+
+        #chatMessages::-webkit-scrollbar-thumb:hover, #geminiResponse::-webkit-scrollbar-thumb:hover {
+            background-color: #00b3b3;
+        }
+
+
+        .user-message {
+            align-self: flex-start;
+            border-radius: 10px 10px 10px 0;
+            padding: 8px 12px;
+            margin-bottom: 5px;
+            word-wrap: break-word;
+            max-width: 80%;
+            position: relative;
+             box-shadow: 0 0 10px rgba(0, 77, 153, 0.5); /* User message shadow - redundant but ensures it */
+        }
+
+        .other-message {
+            align-self: flex-end;
+            border-radius: 10px 10px 0 10px;
+            padding: 8px 12px;
+            margin-bottom: 5px;
+            word-wrap: break-word;
+            max-width: 80%;
+            position: relative;
+            box-shadow: 0 0 10px rgba(0, 122, 204, 0.5); /* Other message shadow - redundant but ensures it */
+        }
+
+        .message-time {
+            font-size: 0.8em;
+            margin-left: 5px;
+            text-shadow: 0 0 5px rgba(170, 170, 170, 0.3); /* Message time shadow - redundant but ensures it */
+        }
+
+        #messageText, #geminiQuestionInput {
+            width: 60%;
+            margin-right: 5px;
+            display: inline-block;
+            border-radius: 5px; /* Added border-radius to message input */
+            box-shadow: 0 0 10px rgba(0, 230, 230, 0.5); /* Message input glow */
+        }
+        #messageText:focus, #geminiQuestionInput:focus {
+             box-shadow: 0 0 20px #00e6e6; /* Stronger message input glow on focus */
+        }
+
+
+        #sendMessage, #askGeminiButton {
+            padding: 10px 20px;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+            display: inline-block;
+            vertical-align: top;
+            margin-right: 5px;
+            transition: box-shadow 0.3s ease-in-out;
+            animation: subtleButtonGlow 2s infinite alternate;
+             text-shadow: 0 0 10px #00e6e6; /* Send button text glow */
+        }
+
+        #sendMessage:hover, #askGeminiButton:hover {
+            box-shadow: 0 0 30px #00e6e6; /* Stronger send button hover glow */
+        }
+
+
+        @keyframes subtleButtonGlow {
+            from { box-shadow: 0 0 20px #00e6e6; } /* Increased base send button glow */
+            to { box-shadow: 0 0 30px #00e6e6; } /* Increased animated send button glow */
+        }
+
+
+        .file-upload-container {
+            display: inline-flex;
+            align-items: center;
+            cursor: pointer;
+            border-radius: 5px;
+            padding: 5px 10px;
+            transition: box-shadow 0.3s ease-in-out;
+            animation: subtleFileGlow 2s infinite alternate;
+             box-shadow: 0 0 20px #00e6e6; /* File upload container shadow */
+        }
+
+        .file-upload-container:hover {
+            box-shadow: 0 0 30px #00e6e6; /* Stronger file upload hover glow */
+        }
+
+
+        @keyframes subtleFileGlow {
+            from { box-shadow: 0 0 20px #00e6e6; } /* Increased base file upload glow */
+            to { box-shadow: 0 0 30px #00e6e6; } /* Increased animated file upload glow */
+        }
+
+
+        .file-upload-icon {
+            font-size: 1.2em;
+            margin-right: 5px;
+             text-shadow: 0 0 10px #00e6e6; /* File upload icon glow */
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+
+        .delete-button, .admin-delete-button {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: none;
+            border: none;
+            color: red;
+            cursor: pointer;
+            font-size: 0.8em;
+            padding: 0;
+            margin: 0;
+             text-shadow: 0 0 5px red; /* Glow for delete buttons */
+        }
+        .admin-delete-button {
+            right: 25px;
+            color: orange;
+             text-shadow: 0 0 5px orange; /* Glow for admin delete buttons */
+        }
+
+        .leaderboard-section ul {
+            list-style: none; /* Remove default list bullets */
+            padding-left: 0; /* Remove default padding */
+        }
+         .leaderboard-section h2 {
+            margin-bottom: 20px; /* Add space below leaderboard title */
+             text-shadow: 0 0 15px #00e6e6; /* Leaderboard title glow - redundant but ensures it */
+        }
+        /* Leaderboard table styles */
+        .leaderboard-section table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        .leaderboard-section th, .leaderboard-section td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid rgba(0, 230, 230, 0.2); /* Row separator color */
+        }
+
+        .leaderboard-section th {
+            border-bottom: 2px solid #00e6e6; /* Header border color */
+        }
+
+         .leaderboard-section button {
+            background-color: #00e6e6;
+            color: #001a33;
+            border: none;
+            padding: 8px 12px;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: background-color 0.3s ease;
+        }
+
+        .leaderboard-section button:hover {
+            background-color: #00b3b3;
+        }
+    </style>
+    <style>
+        .state-list button {
+            display: block;
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+            border: none;
+            border-radius: 5px;
+            transition: transform 0.3s ease-in-out, box-shadow 0.3s ease-in-out;
+            font-weight: bold;
+            text-align: left;
+            cursor: pointer;
+            animation: subtleStateButtonGlow 2s infinite alternate;
+             box-shadow: 0 0 20px #00e6e6; /* State button shadow */
+        }
+
+        .state-list button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 35px #00e6e6; /* Stronger state button hover glow */
+        }
+
+
+        @keyframes subtleStateButtonGlow {
+            from { box-shadow: 0 0 20px #00e6e6; } /* Increased base state button glow */
+            to { box-shadow: 0 0 30px #00e6e6; } /* Increased animated state button glow */
+        }
+    </style>
+    <style>
+        /* Sidebar Settings Section Styles */
+        .sidebar-settings-section {
+            display: none; /* Initially hidden */
+            padding: 20px;
+        }
+
+        .sidebar-settings-section h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .sidebar-settings-section ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .sidebar-settings-section li {
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(0, 230, 230, 0.2);
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+
+        .sidebar-settings-section li:last-child {
+            border-bottom: none;
+        }
+
+        .sidebar-settings-section li:hover {
+            background-color: #004080; /* Example hover color */
+        }
+
+        .sidebar-settings-section #closeSettingsSidebar {
+            background: none;
+            border: none;
+            font-size: 1.2em;
+            cursor: pointer;
+            display: block;
+            margin: 15px auto 0; /* Center close button */
+            padding: 10px 20px;
+            border-radius: 5px;
+            transition: color 0.2s ease;
+        }
+
+        .sidebar-settings-section ul li ul {
+            list-style: none;
+            padding-left: 20px; /* Indent theme options */
+            margin-top: 5px;
+        }
+
+        .sidebar-settings-section ul li ul li {
+            padding: 8px 0;
+            cursor: pointer;
+        }
+        .sidebar-settings-section ul li ul li:hover {
+            background-color: #004080;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha512-9usAa10IRO0HhonpyAIVpjrylPvoDwiPUiKdWk5t3PyolY1cOd4DSE0Ga+ri4AuTroPR5aQvXU9xC6qOPnzFeg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+</head>
+<body class="theme-neon-green"> <!-- Default theme is now neon-green -->
+    <div class="sidebar">
+        <h2>🌍 Seva Application 🌍</h2>
+
+        <div class="sidebar-buttons" id="sidebarButtons">
+            <button onclick="showSection('sevaForm')">🔥 Apply for Seva 🔥</button>
+            <button onclick="showSection('donationSection')">💰 Donate Now 💰</button>
+            <button id="showLeaderboard" onclick="showSection('leaderboardSection')">🏆 Leaderboard 🏆</button>
+            <button onclick="openChatroom('Kathas List')">📜 Kathas List 📜</button>  <!-- Renamed to Kathas List -->
+            <button onclick="openChatroom('General Group')">👥 General Group Chat 👥</button>
+            <!-- Volunteers Group Chat REMOVED -->
+            <button onclick="showGeminiSection()">🤖 Gemini AI Chat 🤖</button>  <!-- NEW GEMINI AI BUTTON -->
+            <button id="adminDashboardButton" onclick="toggleAdminDashboard()" style="display: none;">⚙️ Admin Dashboard ⚙️</button>
+            <button id="settingsButtonSidebar" onclick="showSettingsSection()">⚙️ Settings ⚙️</button> <!-- New Settings Button in Sidebar -->
+        </div>
+
+        <div class="sidebar-settings-section" id="settingsSidebarSection" style="display: none;">
+            <h3>⚙️ Settings ⚙️</h3>
+            <ul>
+                <li onclick="alert('View Account Details (Not Implemented)');">Account Details</li>
+                <li>
+                    Theme
+                    <ul>
+                        <li class="theme-option-sidebar" data-theme="default">Default</li>
+                        <li class="theme-option-sidebar" data-theme="dark-a">Dark A</li>
+                        <li class="theme-option-sidebar" data-theme="white">White</li>
+                        <li class="theme-option-sidebar" data-theme="theme4">Blue</li>
+                        <li class="theme-option-sidebar" data-theme="theme5">Green</li>
+                        <li class="theme-option-sidebar" data-theme="neon-orange">Neon Orange</li>
+                        <li class="theme-option-sidebar" data-theme="neon-green">Neon Green</li>
+                    </ul>
+                </li>
+                <li onclick="alert('Notification Settings (Not Implemented)');">Notifications</li>
+            </ul>
+            <button id="closeSettingsSidebar">❌ Close Settings</button>
+        </div>
+
+
+        <h3 style="margin-top: 20px;">📌 State Chatrooms</h3>
+        <div class="state-list">
+            <button onclick="openChatroom('Andhra Pradesh')">Andhra Pradesh</button>
+            <button onclick="openChatroom('Arunachal Pradesh')">Arunachal Pradesh</button>
+            <button onclick="openChatroom('Assam')">Assam</button>
+            <button onclick="openChatroom('Bihar')">Bihar</button>
+            <button onclick="openChatroom('Chhattisgarh')">Chhattisgarh</button>
+            <button onclick="openChatroom('Goa')">Goa</button>
+            <button onclick="openChatroom('Gujarat')">Gujarat</button>
+            <button onclick="openChatroom('Haryana')">Haryana</button>
+            <button onclick="openChatroom('Himachal Pradesh')">Himachal Pradesh</button>
+            <button onclick="openChatroom('Jharkhand')">Jharkhand</button>
+            <button onclick="openChatroom('Karnataka')">Karnataka</button>
+            <button onclick="openChatroom('Kerala')">Kerala</button>
+            <button onclick="openChatroom('Madhya Pradesh')">Madhya Pradesh</button>
+            <button onclick="openChatroom('Maharashtra')">Maharashtra</button>
+            <button onclick="openChatroom('Manipur')">Manipur</button>
+            <button onclick="openChatroom('Meghalaya')">Meghalaya</button>
+            <button onclick="openChatroom('Mizoram')">Mizoram</button>
+            <button onclick="openChatroom('Nagaland')">Nagaland</button>
+            <button onclick="openChatroom('Odisha')">Odisha</button>
+            <button onclick="openChatroom('Punjab')">Punjab</button>
+            <button onclick="openChatroom('Rajasthan')">Rajasthan</button>
+            <button onclick="openChatroom('Sikkim')">Sikkim</button>
+            <button onclick="openChatroom('Tamil Nadu')">Tamil Nadu</button>
+            <button onclick="openChatroom('Telangana')">Telangana</button>
+            <button onclick="openChatroom('Tripura')">Tripura</button>
+            <button onclick="openChatroom('Uttar Pradesh')">Uttar Pradesh</button>
+            <button onclick="openChatroom('Uttarakhand')">Uttarakhand</button>
+            <button onclick="openChatroom('West Bengal')">West Bengal</button>
+        </div>
+    </div>
+
+    <div class="content">
+        <div id="sevaForm" class="seva-section">
+            <h2>Apply for Seva</h2>
+            <input type="text" id="name" placeholder="Enter your name">
+            <input type="text" id="phone" placeholder="Enter your phone number">
+            <input type="email" id="email" placeholder="Enter your email">
+            <select id="sevaType">
+                <option value="">Select Seva Type</option>
+                <option value="Teaching">Teaching</option>
+                <option value="Cleaning">Cleaning</option>
+                <option value="Food Distribution">Food Distribution</option>
+            </select>
+            <!-- New State Selection Dropdown -->
+            <select id="state">
+                <option value="">Select State</option>
+                <option value="Andhra Pradesh">Andhra Pradesh</option>
+                <option value="Arunachal Pradesh">Arunachal Pradesh</option>
+                <option value="Assam">Assam</option>
+                <option value="Bihar">Bihar</option>
+                <option value="Chhattisgarh">Chhattisgarh</option>
+                <option value="Goa">Goa</option>
+                <option value="Gujarat">Gujarat</option>
+                <option value="Haryana">Haryana</option>
+                <option value="Himachal Pradesh">Himachal Pradesh</option>
+                <option value="Jharkhand">Jharkhand</option>
+                <option value="Karnataka">Karnataka</option>
+                <option value="Kerala">Kerala</option>
+                <option value="Madhya Pradesh">Madhya Pradesh</option>
+                <option value="Maharashtra">Maharashtra</option>
+                <option value="Manipur">Manipur</option>
+                <option value="Meghalaya">Meghalaya</option>
+                <option value="Mizoram">Mizoram</option>
+                <option value="Nagaland">Nagaland</option>
+                <option value="Odisha">Odisha</option>
+                <option value="Punjab">Punjab</option>
+                <option value="Rajasthan">Rajasthan</option>
+                <option value="Sikkim">Sikkim</button>
+                <option value="Tamil Nadu">Tamil Nadu</option>
+                <option value="Telangana">Telangana</button>
+                <option value="Tripura">Tripura</option>
+                <option value="Uttar Pradesh">Uttar Pradesh</option>
+                <option value="Uttarakhand">Uttarakhand</option>
+                <option value="West Bengal">West Bengal</option>
+            </select>
+            <button id="submitSeva">Submit Seva Application</button>
+        </div>
+
+        <div id="donationSection" class="donation-section">
+            <h2>Donate Now</h2>
+            <p>Your generous donations help us to expand our Seva initiatives and reach more people in need.  Every contribution, big or small, makes a significant difference in supporting our mission to serve the community. Your support enables us to provide essential resources, organize impactful seva activities, and ensure the sustainability of our programs. Thank you for considering donating and being a part of this noble cause. Together, we can create a positive impact and make a difference in the lives of many.</p>
+            <a href="https://buy.stripe.com/test_cN214T3BR4Ga0Lu288" target="_blank">Donate via Stripe</a>
+        </div>
+
+        <div id="leaderboardSection" class="leaderboard-section">
+            <h2>Leaderboard</h2>
+            <div id="leaderboardTable"></div>
+        </div>
+
+        <div id="chatSection" class="chat-section" style="display: flex; flex-direction: column;">
+            <div class="chat-header">
+                <h2 id="currentChatStateName">Chat Room</h2>
+                <div class="chat-header-icons">
+                    <div class="account-settings-icon" id="accountSettingsIcon">
+                        <i class="fas fa-cog"></i>
+                        <div class="account-settings-dropdown" id="accountSettingsDropdown">
+                            <ul>
+                                <li onclick="alert('View Account Details (Not Implemented)');">Account Details</li>
+                                <li>
+                                    Theme
+                                    <ul>
+                                        <li class="theme-option" data-theme="default">Default</li>
+                                        <li class="theme-option" data-theme="dark-a">Dark A</li>
+                                        <li class="theme-option" data-theme="white">White</li>
+                                        <li class="theme-option" data-theme="theme4">Blue</li>
+                                        <li class="theme-option" data-theme="theme5">Green</li>
+                                        <li class="theme-option" data-theme="neon-orange">Neon Orange</li>
+                                        <li class="theme-option" data-theme="neon-green">Neon Green</li>
+                                    </ul>
+                                </li>
+                                <li onclick="alert('Notification Settings (Not Implemented)');">Notifications</li>
+                                <li id="closeAccountSettings">Close Settings</li>
+                                <!-- Add more account settings options here -->
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="group-profile-icon" id="groupProfileIcon">
+                        <span>GR</span>
+                    </div>
+                </div>
+            </div>
+
+            <div id="chatMessageContainer" class="chat-area" style="display: flex; flex-direction: column;">
+                <div id="chatMessages">
+                    <!-- Messages will be loaded here -->
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <input type="text" id="messageText" placeholder="Type your message here">
+                    <button id="sendMessage">Send</button>
+                    <div class="file-upload-container" id="fileInput-trigger">
+                        <i class="fas fa-upload file-upload-icon"></i> <span>Choose Files</span>
+                    </div>
+                    <input type="file" id="fileInput" style="color: #00e6e6;">
+                </div>
+            </div>
+
+            <div id="groupSettingsPage" class="group-settings-page" style="display: none;">
+                <div class="group-settings-header">
+                    <h3>Group Settings</h3>
+                    <button id="closeGroupSettingsButton" class="close-group-settings-button">
+                        <i class="fas fa-times-circle"></i>
+                    </button>
+                </div>
+
+                <div class="group-settings-dropdown">
+                    <h4>Group Members</h4>
+                    <ul id="groupMembersList">
+                        <!-- Group members will be listed here -->
+                    </ul>
+                </div>
+
+                <ul class="group-settings-options">
+                    <li onclick="alert('Group Settings Option 1 (Not Implemented)');">Option 1</li>
+                    <li onclick="alert('Group Settings Option 2 (Not Implemented)');">Option 2</li>
+                    <li onclick="alert('Group Settings Option 3 (Not Implemented)');">Option 3</li>
+                    <!-- Add more group settings options here -->
+                </ul>
+            </div>
+        </div>
+
+        <!-- Admin Dashboard Section -->
+        <div id="adminDashboardSection" class="admin-dashboard-section" style="display: none;">
+            <div class="chat-header">
+                <h2>Admin Dashboard</h2>
+                <div class="chat-header-icons">
+                    <button id="closeAdminDashboardButton" class="close-group-settings-button" onclick="hideAdminDashboard()">
+                        <i class="fas fa-times-circle"></i>
+                    </button>
+                </div>
+            </div>
+            <div style="padding: 20px;">
+                <h3>Message Management</h3>
+                <p>Welcome to the Admin Dashboard. From here, you can manage messages and perform other administrative tasks. More features are coming soon.</p>
+                <!-- Future admin functionalities can be added here -->
+            </div>
+        </div>
+
+        <!-- Gemini AI Chat Section -->
+        <div id="geminiSection" class="gemini-section" style="display: none;">
+            <div class="chat-header">
+                <h2>Gemini AI Chat</h2>
+                <div class="chat-header-icons">
+                    <button id="closeGeminiSectionButton" class="close-group-settings-button" onclick="hideGeminiSection()">
+                        <i class="fas fa-times-circle"></i>
+                    </button>
+                </div>
+            </div>
+            <div style="padding: 20px;">
+                <input type="text" id="geminiQuestionInput" placeholder="Ask me anything...">
+                <button id="askGeminiButton">Ask Gemini AI</button>
+                <div id="geminiResponse" style="margin-top: 20px; padding: 10px; border: 1px solid #00e6e6; border-radius: 5px;">
+                    <!-- Gemini AI response will be displayed here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ---  Conditionally Show Admin Dashboard Button ---
+        document.addEventListener("DOMContentLoaded", function () {
+            if (isAdminUser(currentSenderName)) {
+                document.getElementById('adminDashboardButton').style.display = 'block'; // Show button for admins
+            }
+        });
+    </script>
+</body>
+</html>
